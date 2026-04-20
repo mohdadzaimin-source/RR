@@ -1,0 +1,53 @@
+{
+  "entities": {
+    "VehicleRequest": {
+      "title": "Borang Permohonan Kenderaan",
+      "description": "Maklumat permohonan kenderaan rasmi RISDA",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "data": { "$ref": "#/entities/ExtractionResult" }
+      },
+      "required": ["userId", "userEmail", "createdAt", "data"]
+    },
+    "ExtractionResult": {
+      "title": "Data Hasil Pengekstrakan",
+      "description": "Data berstruktur hasil daripada imbasan AI atau borang digital",
+      "type": "object",
+      "properties": {
+        "maklumat_pemohon": { "type": "object" },
+        "butiran_perjalanan": { "type": "object" },
+        "jenis_kenderaan_dipohon": { "type": "object" },
+        "status_kelulusan": { "type": "object" }
+      }
+    },
+    "Admin": {
+      "title": "Administrator",
+      "description": "Pengguna yang mempunyai akses dashboard admin dengan peranan tertentu",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "role": { 
+          "type": "string", 
+          "enum": ["Pegawai Kenderaan", "Ketua Unit", "PRD", "Admin"],
+          "description": "Tahap kawalan administratif: Pegawai Kenderaan (Semakan), Ketua Unit (Sokongan), PRD (Kelulusan)"
+        }
+      },
+      "required": ["email", "role"]
+    }
+  },
+  "firestore": {
+    "/requests/{requestId}": {
+      "schema": "VehicleRequest",
+      "description": "Koleksi semua permohonan kenderaan"
+    },
+    "/admins/{adminId}": {
+      "schema": "Admin",
+      "description": "Koleksi pengguna bertaraf admin"
+    }
+  }
+}

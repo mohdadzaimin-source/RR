@@ -1,0 +1,90 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOfficialAdmin() {
+      return isSignedIn() && 
+             'email' in request.auth.token && 
+             request.auth.token.email.toLower() in [
+               'izarul@risda.gov.my', 
+               'syahrul.nizam@risda.gov.my', 
+               'sulizah@risda.gov.my', 
+               'ira@risda.gov.my', 
+               'mohdadzaimin@gmail.com'
+             ];
+    }
+
+    function isAdmin() {
+      return isOfficialAdmin() || (isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Requests collection
+    match /requests/{requestId} {
+      allow list: if isSignedIn();
+      allow get: if isSignedIn() && (
+        isOwner(existing().userId) || 
+        isAdmin() || 
+        (exists(/databases/$(database)/documents/admins/$(request.auth.uid))) ||
+        (existing().data.jenis_kenderaan_dipohon.kenderaan_id != null) // Simplified for now
+      );
+      
+      allow create: if isSignedIn() && 
+                      isValidId(requestId) &&
+                      incoming().userId == request.auth.uid &&
+                      incoming().userEmail == request.auth.token.email &&
+                      incoming().createdAt == request.time;
+      
+      allow update: if isSignedIn() && 
+                      (
+                        // Admin or role-based update
+                        (isAdmin() && (
+                          incoming().diff(existing()).affectedKeys().hasOnly(['data', 'updatedAt']) ||
+                          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+                        )) ||
+                        // Driver update (simplified check)
+                        (incoming().diff(existing()).affectedKeys().hasOnly(['data', 'updatedAt']) && 
+                         incoming().data.status_kelulusan.pemandu != existing().data.status_kelulusan.pemandu) ||
+                        // Owner update
+                        (isOwner(existing().userId) && incoming().diff(existing()).affectedKeys().hasOnly(['data', 'updatedAt']))
+                      ) &&
+                      incoming().updatedAt == request.time;
+                      
+      allow delete: if isAdmin();
+    }
+
+    // Admins collection
+    match /admins/{adminId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && 
+                     adminId == request.auth.uid && 
+                     (isOfficialAdmin() || 
+                      request.auth.token.email.toLower() == 'mohdadzaimin@gmail.com' || 
+                      request.auth.token.email.toLower() == 'mohdadzaimin@googlemail.com');
+    }
+  }
+}
