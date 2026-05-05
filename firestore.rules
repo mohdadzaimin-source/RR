@@ -14,12 +14,14 @@ service cloud.firestore {
     function isOfficialAdmin() {
       return isSignedIn() && 
              'email' in request.auth.token && 
-             request.auth.token.email.toLower() in [
+             request.auth.token.email.lower() in [
                'izarul@risda.gov.my', 
+               'adzaimin@risda.gov.my',
                'syahrul.nizam@risda.gov.my', 
                'sulizah@risda.gov.my', 
                'ira@risda.gov.my', 
-               'mohdadzaimin@gmail.com'
+               'mohdadzaimin@gmail.com',
+               'mohdadzaimin@googlemail.com'
              ];
     }
 
@@ -45,18 +47,13 @@ service cloud.firestore {
 
     // Requests collection
     match /requests/{requestId} {
-      allow list: if isSignedIn();
-      allow get: if isSignedIn() && (
-        isOwner(existing().userId) || 
-        isAdmin() || 
-        (exists(/databases/$(database)/documents/admins/$(request.auth.uid))) ||
-        (existing().data.jenis_kenderaan_dipohon.kenderaan_id != null) // Simplified for now
-      );
+      // Allow public read and creation since the portal allows guest tracking by email
+      allow read: if true;
+      allow list: if true;
+      allow get: if true;
       
-      allow create: if isSignedIn() && 
-                      isValidId(requestId) &&
-                      incoming().userId == request.auth.uid &&
-                      incoming().userEmail == request.auth.token.email &&
+      allow create: if isValidId(requestId) &&
+                      incoming().userEmail != null &&
                       incoming().createdAt == request.time;
       
       allow update: if isSignedIn() && 
@@ -69,7 +66,7 @@ service cloud.firestore {
                         // Driver update (simplified check)
                         (incoming().diff(existing()).affectedKeys().hasOnly(['data', 'updatedAt']) && 
                          incoming().data.status_kelulusan.pemandu != existing().data.status_kelulusan.pemandu) ||
-                        // Owner update
+                        // Owner update (If they were logged in when creating)
                         (isOwner(existing().userId) && incoming().diff(existing()).affectedKeys().hasOnly(['data', 'updatedAt']))
                       ) &&
                       incoming().updatedAt == request.time;
@@ -83,8 +80,8 @@ service cloud.firestore {
       allow write: if isSignedIn() && 
                      adminId == request.auth.uid && 
                      (isOfficialAdmin() || 
-                      request.auth.token.email.toLower() == 'mohdadzaimin@gmail.com' || 
-                      request.auth.token.email.toLower() == 'mohdadzaimin@googlemail.com');
+                      request.auth.token.email.lower() == 'mohdadzaimin@gmail.com' || 
+                      request.auth.token.email.lower() == 'mohdadzaimin@googlemail.com');
     }
   }
 }

@@ -3,6 +3,8 @@ import { GoogleGenAI, Type } from "@google/genai";
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
 export interface ExtractionResult {
+  id?: string;
+  moduleType?: string;
   maklumat_pemohon: {
     nama: string | null;
     email: string | null;
@@ -27,7 +29,7 @@ export interface ExtractionResult {
     ketua_unit: string | null;
     pegawai_kenderaan: string | null;
     bahagian_pentadbiran: string | null;
-    pemandu: string | null; // "MENUNGGU JAWAPAN" | "DISAHKAN" | "DITOLAK"
+    pemandu: string | null; // "DITETAPKAN" | "SIAP"
   };
   makanan?: {
     perlu_makanan: boolean;

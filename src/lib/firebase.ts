@@ -37,24 +37,29 @@ export const syncUserAdminRole = async (user: any) => {
   if (!user || !user.email) return null;
   
   const mappedRole = ADMIN_MAPPING[user.email.toLowerCase()];
+  console.log("Syncing admin role for:", user.email, "Mapped:", mappedRole);
+  
   if (mappedRole) {
     try {
       const adminDocRef = doc(db, 'admins', user.uid);
       await setDoc(adminDocRef, {
-        email: user.email,
+        email: user.email.toLowerCase(),
         role: mappedRole,
         lastSync: serverTimestamp()
       }, { merge: true });
+      console.log("Admin sync successful for:", user.email);
       return mappedRole;
     } catch (err) {
       console.error("Admin sync failed (likely permission):", err);
-      // Fallback to what's already in DB or just the mapped role in memory
+      // Fallback to what's already in memory mapping
       return mappedRole; 
     }
   }
   
   try {
-    return await getAdminRole(user.uid);
+    const role = await getAdminRole(user.uid);
+    console.log("Fetched existing admin role for:", user.email, role);
+    return role;
   } catch (err) {
     console.error("Failed to fetch admin role:", err);
     return null;
@@ -98,6 +103,7 @@ export const assignFleetManually = async (requestId: string, vehicleId: string, 
   return updateDoc(requestRef, {
     'data.jenis_kenderaan_dipohon.kenderaan_id': vehicleId,
     'data.status_kelulusan.pemandu_email': driverEmail,
+    'data.status_kelulusan.pemandu': 'DITETAPKAN',
     updatedAt: serverTimestamp()
   });
 };

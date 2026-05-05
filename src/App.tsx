@@ -20,6 +20,8 @@ import {
   Clock,
   ExternalLink,
   ShieldAlert,
+  ShieldCheck,
+  Shield,
   LogOut,
   LayoutDashboard,
   LayoutGrid,
@@ -33,7 +35,9 @@ import {
   Calendar as CalendarIcon,
   Info,
   ChevronLeft,
-  Bell
+  Bell,
+  QrCode,
+  Printer
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { type ExtractionResult } from "./lib/gemini.ts";
@@ -88,12 +92,13 @@ function LiveDateTime() {
   );
 }
 
-type AppState = "idle" | "processing" | "result" | "error" | "filling" | "admin" | "calendar" | "hub";
+type AppState = "idle" | "processing" | "result" | "error" | "filling" | "admin" | "calendar" | "hub" | "check_status";
 type AppModule = "vehicle" | "meeting" | "catering" | "complaint" | "stationery";
 
 export default function App() {
   const [state, setState] = useState<AppState>("idle");
   const [currentModule, setCurrentModule] = useState<AppModule>("vehicle");
+  const [checkEmail, setCheckEmail] = useState("");
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [adminRole, setAdminRole] = useState<string | null>(null);
   const [isDriver, setIsDriver] = useState(false);
@@ -120,12 +125,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    // Fetch all requests for calendar and admin only if user is logged in
-    if (!user) {
-      setRequests([]);
-      return;
-    }
-    
+    // Fetch all requests, allowed for both guests and authenticated
     const q = query(collection(db, "requests"), orderBy("createdAt", "desc"));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       setRequests(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
@@ -133,7 +133,7 @@ export default function App() {
       console.error("Firestore onSnapshot error:", err);
     });
     return unsubscribe;
-  }, [user]);
+  }, []);
 
   useEffect(() => {
     // Keep selectedRequest in sync with requests list
@@ -145,8 +145,493 @@ export default function App() {
     }
   }, [requests]);
 
+  const [resultSource, setResultSource] = useState<"submission" | "check" | null>(null);
   const [result, setResult] = useState<ExtractionResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showQRModal, setShowQRModal] = useState<boolean>(false);
+  const systemUrl = "https://ais-pre-wm26zkt4soctiqwv3vzcvm-808972491297.asia-southeast1.run.app";
+
+  const handlePrintPdf = async (data: any, moduleType: string | undefined, id: string, dateStr: string) => {    
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      alert("Sila benarkan 'Pop-ups' pada browser anda untuk mencetak, atau tekan butang ini dengan membuka pautan terus (Open in New Tab).");
+      return;
+    }
+
+    const mp = data.maklumat_pemohon || {};
+    const bp = data.butiran_perjalanan || {};
+    const jk = data.jenis_kenderaan_dipohon || {};
+    const status = data.status_kelulusan || {};
+    
+    const isVehicle = moduleType === 'vehicle' || !moduleType;
+    let htmlContent = '';
+    
+    if (isVehicle) {
+         const jenis = jk.jenis || '';
+         const cg = (cond: boolean) => cond ? 'X' : '&nbsp;';
+         const isBas = jenis.toLowerCase().includes('bas');
+         const isVan = jenis.toLowerCase().includes('van') || jenis.toLowerCase().includes('hiace');
+         const isKereta = jenis.toLowerCase().includes('kereta') || jenis.toLowerCase().includes('sedan') || jenis.toLowerCase().includes('perdana');
+         const is4x4 = jenis.toLowerCase().includes('pacuan') || jenis.toLowerCase().includes('hilux');
+         
+         const isRasmi = jk.tujuan_penggunaan?.toLowerCase().includes('rasmi') && !jk.tujuan_penggunaan?.toLowerCase().includes('tidak');
+         const isTidak = jk.tujuan_penggunaan?.toLowerCase().includes('tidak') || jk.tujuan_penggunaan?.toLowerCase().includes('sewa');
+         
+         htmlContent = `
+            <div class="header-right">
+              Lampiran I<br/>
+              PK-RIS 04 (PINDAAN)
+            </div>
+            <div class="center-title">
+              <div style="text-align: center;">
+                 <svg width="60" height="70" viewBox="0 0 100 110" fill="none" stroke="black" stroke-width="2">
+                   <path d="M50 5 L10 20 L10 60 C10 80 50 105 50 105 C50 105 90 80 90 60 L90 20 Z" />
+                   <text x="50" y="60" font-family="Arial" font-size="22" font-weight="bold" text-anchor="middle" fill="black" stroke="none">RISDA</text>
+                 </svg>
+              </div>
+              <h3 style="margin-top:5px; font-size:12pt;">BORANG PERMOHONAN MENGGUNAKAN KENDERAAN RASMI</h3>
+            </div>
+
+            <p>Tarikh: <strong>${dateStr}</strong></p>
+            <p>
+              Pengarah<br/>
+              Bhg. Pentadbiran/PRN/PRD/J/B<br/>
+              <span style="font-size: 8pt;">(Potong yang mana tidak berkenaan)</span>
+            </p>
+
+            <p>Tuan/Puan,</p>
+            <p class="section-title" style="margin-bottom:20px;">PERMOHONAN MENGGUNAKAN KENDERAAN RASMI</p>
+
+            <p class="section-title">Bahagian I (Diisi oleh pemohon)</p>
+
+            <table class="form-table">
+              <tr><td class="label-col">Nama Pemohon</td><td class="colon-col">:</td><td class="value-col">${mp.nama || ''}</td></tr>
+              <tr><td class="label-col">Jawatan</td><td class="colon-col">:</td><td class="value-col">${mp.jawatan || ''}</td></tr>
+              <tr><td class="label-col">Tempat Bertugas</td><td class="colon-col">:</td><td class="value-col">${mp.tempat_bertugas || ''}</td></tr>
+            </table>
+            
+            <table class="form-table">
+              <tr>
+                <td style="width:25%">No. Telefon Pejabat</td>
+                <td style="width:5%; text-align:center;">:</td>
+                <td style="width:25%; border-bottom: 1px solid #000; font-weight:bold;">${mp.no_tel_pejabat || ''}</td>
+                <td style="width:10%; text-align:right; padding-right:10px;">Samb.:</td>
+                <td style="width:15%; border-bottom: 1px solid #000; font-weight:bold;"></td>
+                <td style="width:10%; text-align:right; padding-right:10px;">No. Tel. Bimbit :</td>
+                <td style="width:25%; border-bottom: 1px solid #000; font-weight:bold;">${mp.no_tel_bimbit || ''}</td>
+              </tr>
+            </table>
+
+            <table class="form-table">
+               <tr><td class="label-col">Nama Penumpang<br/><span style="font-size:8pt; font-weight:normal;">(Jika Ada)</span></td><td class="colon-col">:</td><td class="value-col" style="vertical-align:bottom;">${(bp.penumpang || []).filter((p:any)=>p).join(', ') || '-'}</td></tr>
+               <tr><td class="label-col">Tujuan Perjalanan</td><td class="colon-col">:</td><td class="value-col" style="vertical-align:bottom;">${bp.tujuan || ''}</td></tr>
+               <tr><td></td><td></td><td style="font-size:8pt; text-align:center;">(Sila sertakan arahan bertugas)</td></tr>
+            </table>
+
+            <table class="form-table">
+               <tr>
+                 <td style="width:25%">Tarikh diperluka</td>
+                 <td style="width:5%; text-align:center;">:</td>
+                 <td style="width:10%">Daripada :</td>
+                 <td style="width:25%; border-bottom: 1px solid #000; font-weight:bold;">${bp.tarikh_perlukan || ''}</td>
+                 <td style="width:10%; text-align:right; padding-right:10px;">Hingga</td>
+                 <td style="width:25%; border-bottom: 1px solid #000;"></td>
+               </tr>
+            </table>
+            <table class="form-table">
+               <tr>
+                 <td style="width:25%">Tempat Menunggu</td>
+                 <td style="width:5%; text-align:center;">:</td>
+                 <td style="width:35%; border-bottom: 1px solid #000; font-weight:bold;">${bp.tempat_menunggu || ''}</td>
+                 <td style="width:15%; text-align:right; padding-right:10px;">Waktu bertolak :</td>
+                 <td style="width:20%; border-bottom: 1px solid #000; font-weight:bold;">${bp.waktu_bertolak || ''}</td>
+               </tr>
+            </table>
+
+            <table class="form-table" style="margin-top:15px;">
+              <tr>
+                <td style="width:25%">Jenis Kenderaan</td>
+                <td style="width:5%; text-align:center;">:</td>
+                <td style="width:70%">
+                   <span class="checkbox">${cg(isBas)}</span> Bas &nbsp;&nbsp;&nbsp;
+                   <span class="checkbox">${cg(isVan)}</span> Van &nbsp;&nbsp;&nbsp;
+                   <span class="checkbox">${cg(isKereta)}</span> Kereta &nbsp;&nbsp;&nbsp;
+                   <span class="checkbox">${cg(is4x4)}</span> Pacuan 4 Roda
+                </td>
+              </tr>
+              <tr>
+                 <td style="padding-top:10px;">Tujuan Penggunaan</td>
+                 <td style="padding-top:10px; text-align:center;">:</td>
+                 <td style="padding-top:10px;">
+                   <span class="checkbox">${cg(isRasmi)}</span> Rasmi &nbsp;&nbsp;&nbsp;
+                   <span class="checkbox">${cg(isTidak)}</span> Tidak Rasmi / Sewa
+                 </td>
+              </tr>
+            </table>
+
+            <p class="section-title" style="margin-top:30px;">PENGAKUAN</p>
+            <p>Dengan ini saya bersetuju mematuhi segala syarat-syarat Penggunaan / Penyewaan sebagaimana yang telah ditetapkan oleh Pengurusan RISDA.</p>
+
+            <table style="width:100%; margin-top:30px;">
+              <tr>
+                <td style="width:50%">
+                   <div class="sign-line" style="width:200px;"></div><br/>
+                   Tandatangan Pemohon<br/><br/>
+                   Tarikh: <strong>${dateStr}</strong>
+                </td>
+                <td></td>
+              </tr>
+            </table>
+            
+            <div style="text-align:center; margin-top:20px;">1</div>
+            
+            <div class="page-break"></div>
+            
+            <div class="header-right">
+              Lampiran I<br/>
+              PK-RIS 04 (PINDAAN)
+            </div>
+
+            <p class="section-title" style="margin-top:30px;">BAHAGIAN II (Semakan & Sokongan Ketua Unit)</p>
+            <p>Permohonan serta perjalanan pegawai di atas adalah tugas rasmi / tidak rasmi adalah :<br/><br/>
+               <strong>${status.ketua_unit === 'DISOKONG' ? '<strike>Tidak Disokong</strike> / Disokong' : status.ketua_unit === 'TIDAK DISOKONG' ? 'Tidak Disokong / <strike>Disokong</strike>' : 'Disokong / Tidak Disokong'}</strong>
+               <span style="font-size:8pt; margin-left:10px;">(Potong yang mana tidak berkenaan)</span>
+            </p>
+            <p style="margin-top:20px;">Ulasan : <span style="display:inline-block; border-bottom:1px solid #000; width:80%; font-weight:bold; padding-left:10px;">${status.ketua_unit === 'DISOKONG' ? 'Disokong melalui Sistem' : ''}</span></p>
+            <div style="border-bottom:1px solid #000; width:100%; height:20px; margin-bottom:20px;"></div>
+
+
+            <table style="width:100%; margin-top:40px;">
+              <tr>
+                <td style="width:50%">Tandatangan & Cop : <span class="sign-line" style="width:150px;"></span></td>
+                <td style="width:50%">Tarikh : <strong class="sign-line" style="width:150px; font-weight:bold; text-align:center;">${status.ketua_unit !== 'MENUNGGU SOKONGAN' ? dateStr : ''}</strong></td>
+              </tr>
+            </table>
+
+            <p class="section-title" style="margin-top:50px;">BAHAGIAN III (Pengesahan Pegawai Kenderaan)</p>
+            <p>Disahkan penggunaan ini <strong>${status.pegawai_kenderaan === 'SAH' ? 'mematuhi / <strike>tidak mematuhi</strike>' : status.pegawai_kenderaan === 'TIDAK SAH' || status.pegawai_kenderaan === 'KELIRU / TIDAK LENGKAP' ? '<strike>mematuhi</strike> / tidak mematuhi' : 'mematuhi / tidak mematuhi'}</strong> peraturan yang sedang berkuatkuasa :<br/>
+               <span style="font-size:8pt;">(Potong yang mana tidak berkenaan)</span>
+            </p>
+
+            <table style="width:100%; margin-top:20px; border-collapse:collapse;">
+              <tr>
+                <td style="width:25%; vertical-align:bottom;">Kenderaan yang diluluskan:</td>
+                <td style="width:40%; border-bottom:1px solid #000; vertical-align:bottom; font-weight:bold; text-align:center;">${jk.kenderaan_id || ''}</td>
+                <td style="width:15%; vertical-align:bottom; text-align:right; padding-right:10px;">Model Kenderaan :</td>
+                <td style="width:20%; border-bottom:1px solid #000; vertical-align:bottom; font-weight:bold; text-align:center;">${jk.kenderaan_id ? jk.jenis : ''}</td>
+              </tr>
+              <tr>
+                <td></td>
+                <td style="text-align:center; font-size:8pt;">(No. Pendaftaran Kenderaan)</td>
+                <td></td>
+                <td></td>
+              </tr>
+            </table>
+
+            <table style="width:100%; margin-top:40px;">
+              <tr>
+                <td style="width:50%">Tandatangan & Cop : <span class="sign-line" style="width:150px;"></span></td>
+                <td style="width:50%">Tarikh : <strong class="sign-line" style="width:150px; font-weight:bold; text-align:center;">${status.pegawai_kenderaan !== 'MENUNGGU PENGESAHAN' ? dateStr : ''}</strong></td>
+              </tr>
+            </table>
+
+            <p class="section-title" style="margin-top:50px;">BAHAGIAN IV (Kelulusan & Perakuan Bhg. Pentadbiran/PRN/PRD/J/B)</p>
+            <p>Permohonan serta perjalanan pegawai di atas adalah tugas rasmi / tidak rasmi adalah :<br/><br/>
+               <strong>${status.bahagian_pentadbiran?.includes('LULUS') ? 'Diluluskan / <strike>Tidak Diluluskan</strike>' : status.bahagian_pentadbiran?.includes('TIDAK') ? '<strike>Diluluskan</strike> / Tidak Diluluskan' : 'Diluluskan / Tidak Diluluskan'}</strong>. <span style="font-size:8pt; margin-left:10px;">(Potong yang mana tidak berkenaan)</span>
+            </p>
+
+            <p style="margin-top:20px;">Ulasan : <span style="display:inline-block; border-bottom:1px solid #000; width:80%;"></span></p>
+            <div style="border-bottom:1px solid #000; width:100%; height:20px; margin-bottom:20px;"></div>
+
+            <table style="width:100%; margin-top:40px;">
+              <tr>
+                <td style="width:50%">Tandatangan & Cop : <span class="sign-line" style="width:150px;"></span></td>
+                <td style="width:50%">Tarikh : <span class="sign-line" style="width:150px;"></span></td>
+              </tr>
+            </table>
+
+            <div style="margin-top:40px; font-weight:bold; font-size:10pt;">
+              ** Borang ini wajib diisi setiap kali bagi penggunaan /penyewaan kenderaan rasmi RISDA seperti yang tertakluk dalam Surat Pekeliling Bahagian Pentadbiran Bil. 7 Tahun 2019.
+            </div>
+            
+            <div style="text-align:center; margin-top:20px;">2</div>
+         `;
+    } else {
+         htmlContent = `
+            <div style="text-align:center; margin-bottom: 30px;">
+                <h2 style="margin-bottom:5px;">BORANG TEMPAHAN / ADUAN RASMI</h2>
+                <p style="margin:0; font-weight:bold;">MODUL: ${(moduleType || '').toUpperCase()}</p>
+                <p style="margin:0; font-size:9pt;">ID: ${id}</p>
+            </div>
+            
+            <h3 style="border-bottom:1px solid #000; padding-bottom:5px;">MAKLUMAT PEMOHON</h3>
+            <table style="width:100%; border-collapse:collapse; margin-bottom:30px;" border="1" cellpadding="8">
+                <tr><td style="width:30%; font-weight:bold; background:#eee;">Nama Pemohon</td><td>${mp.nama || ''}</td></tr>
+                <tr><td style="font-weight:bold; background:#eee;">Jawatan / Unit</td><td>${mp.jawatan || ''}</td></tr>
+                <tr><td style="font-weight:bold; background:#eee;">No. Telefon</td><td>${mp.no_tel_pejabat || ''} / ${mp.no_tel_bimbit || ''}</td></tr>
+            </table>
+
+            <h3 style="border-bottom:1px solid #000; padding-bottom:5px;">BUTIRAN PERMOHONAN</h3>
+            <table style="width:100%; border-collapse:collapse; margin-bottom:30px;" border="1" cellpadding="8">
+                <tr><td style="width:30%; font-weight:bold; background:#eee;">Tujuan / Tajuk / Kerosakan</td><td>${bp.tujuan || ''}</td></tr>
+                <tr><td style="font-weight:bold; background:#eee;">Tarikh Diperlukan</td><td>${bp.tarikh_perlukan || ''}</td></tr>
+                <tr><td style="font-weight:bold; background:#eee;">Logistik / Lokasi / Fasiliti</td><td>${bp.tempat_menunggu || ''}</td></tr>
+                <tr><td style="font-weight:bold; background:#eee;">Spesifikasi / Jenis</td><td>${jk.jenis || ''}</td></tr>
+                <tr><td style="font-weight:bold; background:#eee;">Catatan Tambahan</td><td>${jk.tujuan_penggunaan || ''}</td></tr>
+            </table>
+
+            ${data.makanan?.perlu_makanan ? `
+            <h3 style="border-bottom:1px solid #000; padding-bottom:5px;">MAKLUMAT MAKANAN</h3>
+            <table style="width:100%; border-collapse:collapse; margin-bottom:30px;" border="1" cellpadding="8">
+                <tr><td style="width:30%; font-weight:bold; background:#eee;">Pilihan Menu</td><td>${data.makanan.jenis_makanan}</td></tr>
+                <tr><td style="font-weight:bold; background:#eee;">Kaedah Hidangan</td><td>${data.makanan.kaedah_hidangan}</td></tr>
+            </table>` : ''}
+
+            <h3 style="border-bottom:1px solid #000; padding-bottom:5px;">JEJAK KELULUSAN SISTEM</h3>
+            <table style="width:100%; border-collapse:collapse; margin-bottom:30px;" border="1" cellpadding="8">
+                <tr><td style="width:40%; font-weight:bold; background:#eee;">Semakan Pegawai Bertanggungjawab</td><td>${status.pegawai_kenderaan || 'MENUNGGU PENGESAHAN'}</td></tr>
+                <tr><td style="font-weight:bold; background:#eee;">Sokongan Ketua Unit</td><td>${status.ketua_unit || 'MENUNGGU SOKONGAN'}</td></tr>
+                <tr><td style="font-weight:bold; background:#eee;">Kelulusan Pentadbiran (PRD)</td><td>${status.bahagian_pentadbiran || 'MENUNGGU KELULUSAN'}</td></tr>
+            </table>
+         `;
+    }
+
+    printWindow.document.write(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Cetak PDF</title>
+          <style>
+            body { 
+              font-family: Arial, sans-serif; 
+              font-size: 11pt; 
+              color: #000; 
+              background-color: #fff;
+              padding: 0;
+              margin: 0;
+            }
+            .page-break { page-break-before: always; }
+            .header-right { text-align: right; font-size: 10pt; font-weight: bold; }
+            .center-title { text-align: center; }
+            .section-title { font-weight: bold; text-decoration: underline; margin-top: 20px; }
+            table.form-table { width: 100%; border-collapse: collapse; margin-top: 5px; }
+            table.form-table td { padding: 4px 0; vertical-align: bottom; }
+            .label-col { width: 30%; }
+            .colon-col { width: 5%; text-align: center; }
+            .value-col { border-bottom: 1px dotted #000; font-weight: bold; }
+            .checkbox { display: inline-block; width: 15px; height: 15px; border: 1px solid #000; text-align: center; line-height: 15px; font-size: 12px; margin-right: 5px; vertical-align: middle; }
+            .sign-line { border-bottom: 1px dotted #000; width: 250px; display: inline-block; margin-bottom: 5px; }
+            
+            @media print {
+              html, body { padding: 0 !important; margin: 0 !important; height: auto !important; }
+              * {
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+              }
+            }
+          </style>
+        </head>
+        <body class="antialiased">
+          <div style="max-w-4xl mx-auto; padding: 2cm;">
+            ${htmlContent}
+          </div>
+          <script>
+            setTimeout(function() {
+              window.print();
+              setTimeout(function() {
+                window.close();
+              }, 100);
+            }, 500);
+          </script>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+  };
+
+  const exportToCSV = () => {
+    // Flatten requests into exportable rows
+    const headers = [
+      "ID Permohonan", 
+      "Tarikh Mohon", 
+      "Modul Sistem", 
+      "Nama Pemohon", 
+      "Emel", 
+      "Jawatan", 
+      "Pejabat Operasi",
+      "No. Tel",
+      "Tujuan / Keterangan", 
+      "Tarikh Diperlukan", 
+      "Kenderaan / Spesifikasi",
+      "Sokongan Ketua Unit", 
+      "Semakan Pegawai", 
+      "Kelulusan PRD",
+      "Status Pemandu"
+    ];
+    
+    const rows = requests.map(req => {
+      const data = req.data || {};
+      const mp = data.maklumat_pemohon || {};
+      const bp = data.butiran_perjalanan || {};
+      const sk = data.status_kelulusan || {};
+      const jk = data.jenis_kenderaan_dipohon || {};
+
+      return [
+        req.id,
+        req.createdAt ? new Date(req.createdAt.toDate()).toLocaleDateString() : 'Pending',
+        req.moduleType || 'vehicle',
+        mp.nama || 'N/A',
+        req.userEmail || 'N/A',
+        mp.jawatan || 'N/A',
+        mp.tempat_bertugas || 'N/A',
+        mp.no_tel_bimbit || mp.no_tel_pejabat || 'N/A',
+        bp.tujuan || 'N/A',
+        bp.tarikh_perlukan || 'N/A',
+        jk.jenis || jk.tujuan_penggunaan || 'N/A',
+        sk.ketua_unit || 'MENUNGGU SOKONGAN',
+        sk.pegawai_kenderaan || 'MENUNGGU PENGESAHAN',
+        sk.bahagian_pentadbiran || 'MENUNGGU KELULUSAN',
+        sk.pemandu || 'TIADA BERKENAAN'
+      ];
+    });
+
+    const csvContent = [
+      headers.join(","),
+      ...rows.map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(","))
+    ].join("\n");
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `Log_Data_RISDA_Beaufort_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handlePrintDriverReport = () => {
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      alert("Sila benarkan 'Pop-ups' pada browser anda untuk mencetak.");
+      return;
+    }
+
+    const vehicleRequests = requests.filter(r => (!r.moduleType || r.moduleType === 'vehicle') && r.data?.status_kelulusan?.pegawai_kenderaan === "SAH");
+    
+    // Group by Driver Name or Registration Number
+    const grouped: Record<string, any[]> = {};
+    
+    vehicleRequests.forEach(req => {
+      let driverEmail = req.data?.status_kelulusan?.pemandu_email;
+      let vehicleId = req.data?.jenis_kenderaan_dipohon?.kenderaan_id;
+      
+      let driverKey = driverEmail ? driverEmail : "TIADA PEMANDU DITETAPKAN";
+      
+      // Try to find matching FLEET name if possible
+      let fleetMatch = null;
+      if (vehicleId) {
+         fleetMatch = Object.values(FLEET).find(f => f.id === vehicleId);
+      } else if (driverEmail) {
+         fleetMatch = Object.values(FLEET).find(f => f.driver === driverEmail);
+      }
+      
+      if (fleetMatch && !driverEmail) {
+         driverKey = fleetMatch.driver;
+      }
+      
+      if (!grouped[driverKey]) grouped[driverKey] = [];
+      grouped[driverKey].push(req);
+    });
+
+    let htmlContent = `
+      <div style="text-align:center; margin-bottom: 30px;">
+          <h2 style="margin-bottom:5px;">LAPORAN PERGERAKAN PEMANDU & KENDERAAN</h2>
+          <p style="margin:0; font-size:10pt;">Tarikh Janaan: ${new Date().toLocaleDateString('ms-MY')} | Masa: ${new Date().toLocaleTimeString('ms-MY')}</p>
+      </div>
+    `;
+
+    if (Object.keys(grouped).length === 0) {
+       htmlContent += `<p style="text-align:center; margin-top:50px; font-style:italic;">Tiada pergerakan kenderaan yang sah setakat ini.</p>`;
+    }
+
+    Object.entries(grouped).forEach(([driver, rqs]) => {
+      htmlContent += `
+        <h3 style="background:#eee; padding:10px; border:1px solid #000; margin-bottom: 0;">PEMANDU: ${driver.toUpperCase()}</h3>
+        <table style="width:100%; border-collapse:collapse; margin-bottom:30px;" border="1" cellpadding="8">
+          <thead>
+            <tr>
+              <th style="width:15%">ID Permohonan</th>
+              <th style="width:15%">Tarikh/Masa Bertolak</th>
+              <th style="width:15%">Kenderaan / Plat</th>
+              <th style="width:30%">Tujuan / Lokasi</th>
+              <th style="width:15%">Pegawai Pemohon</th>
+              <th style="width:10%">Status Pemandu</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rqs.map((r: any) => {
+              const dEmail = r.data.status_kelulusan?.pemandu_email;
+              const vId = r.data.jenis_kenderaan_dipohon?.kenderaan_id || '-';
+              const fleetInfo = FLEET.find(f => f.driver === dEmail || f.id === vId);
+              const driverDisplayName = fleetInfo ? fleetInfo.name : (dEmail || 'BELUM DITETAPKAN');
+              const displayStatus = dEmail ? `${driverDisplayName} (${vId})` : 'BELUM DITETAPKAN';
+              
+              return `
+              <tr>
+                <td style="font-size:9pt; font-family:monospace;">${r.id}</td>
+                <td>${r.data.butiran_perjalanan?.tarikh_perlukan || '-'} <br/> <small>${r.data.butiran_perjalanan?.waktu_bertolak || ''}</small></td>
+                <td>${vId}</td>
+                <td>${r.data.butiran_perjalanan?.tujuan || '-'} <br/> <small>${r.data.butiran_perjalanan?.tempat_menunggu || ''}</small></td>
+                <td>${r.data.maklumat_pemohon?.nama || '-'}</td>
+                <td>${displayStatus}</td>
+              </tr>
+            `;}).join('')}
+          </tbody>
+        </table>
+      `;
+    });
+
+    printWindow.document.write(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Laporan Pergerakan Pemandu</title>
+          <style>
+            body { 
+              font-family: Arial, sans-serif; 
+              font-size: 10pt; 
+              color: #000; 
+              background-color: #fff;
+            }
+            table th { background-color: #f9f9f9; text-align: left; }
+            @media print {
+              body { padding: 0cm; margin: 1cm; }
+              html, body { height: auto !important; }
+              * {
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+              }
+            }
+          </style>
+        </head>
+        <body>
+          <div style="max-w-4xl mx-auto; padding: 2cm;">
+            ${htmlContent}
+          </div>
+          <script>
+            setTimeout(function() {
+              window.print();
+              setTimeout(function() {
+                window.close();
+              }, 100);
+            }, 500);
+          </script>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+  };
 
   const initialFormData: ExtractionResult = {
     maklumat_pemohon: {
@@ -172,8 +657,8 @@ export default function App() {
     status_kelulusan: {
       ketua_unit: "MENUNGGU SOKONGAN",
       pegawai_kenderaan: "MENUNGGU PENGESAHAN",
-      bahagian_pentadbiran: "MENUNGGU KELULUSAN",
-      pemandu: "MENUNGGU JAWAPAN"
+      bahagian_pentadbiran: "TIDAK PERLU", // By request, PRD approval is no longer strictly needed in flow
+      pemandu: "BELUM DITETAPKAN"
     },
     makanan: {
       perlu_makanan: false,
@@ -189,8 +674,22 @@ export default function App() {
   const handleFormSubmit = async (e: FormEvent) => {
     e.preventDefault();
     
-    // For stationery, it goes straight to the responsible officer, bypassing Unit Head.
     let finalData = { ...formData };
+
+    if (!finalData.maklumat_pemohon.email || finalData.maklumat_pemohon.email.trim() === '') {
+      alert("Sila penuhkan ruangan Emel anda dalam borang untuk membolehkan anda menyemak status permohonan.");
+      return;
+    }
+
+    if (!finalData.maklumat_pemohon.nama || finalData.maklumat_pemohon.nama.trim() === '') {
+      alert("Sila masukkan nama anda.");
+      return;
+    }
+
+    // Move to processing state first
+    setState("processing");
+
+    // For stationery, it goes straight to the responsible officer, bypassing Unit Head.
     if (currentModule === 'stationery') {
       finalData.status_kelulusan = {
         ...finalData.status_kelulusan,
@@ -198,17 +697,22 @@ export default function App() {
       };
     }
     
+    setResultSource("submission");
     setResult(finalData);
-    setState("result");
-    
-    // Auto-save to Firebase if logged in
-    if (user) {
-      try {
-        await saveGenericRequest(user.uid, user.email || "", finalData, currentModule);
-      } catch (err) {
-        console.error("Failed to save request:", err);
-      }
+
+    // Auto-save to Firebase
+    try {
+      const saveEmail = finalData.maklumat_pemohon.email.trim().toLowerCase();
+      const saveId = user ? user.uid : `guest_${Math.random().toString(36).substr(2, 9)}`;
+      await saveGenericRequest(saveId, saveEmail, finalData, currentModule);
+    } catch (err) {
+      console.error("Failed to save request:", err);
     }
+
+    // Wait a brief moment to show processing animation
+    setTimeout(() => {
+      setState("result");
+    }, 1500);
   };
 
   const addPassenger = () => {
@@ -294,9 +798,9 @@ export default function App() {
               ) : (
                 <button 
                   onClick={loginWithGoogle}
-                  className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest bg-white text-dark-bg px-4 py-2 rounded-sm hover:bg-cyan-bright transition-all"
+                  className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-text-light/50 border border-dark-surface hover:text-cyan-bright hover:border-cyan-bright/50 px-4 py-2 rounded-sm transition-all"
                 >
-                  Sign_In
+                  <LayoutDashboard className="w-3 h-3" /> Admin Login
                 </button>
               )}
             </div>
@@ -312,22 +816,45 @@ export default function App() {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
-              className="flex flex-col items-center text-center max-w-5xl mx-auto pt-16 pb-20"
+              className="flex flex-col items-center text-center max-w-6xl mx-auto pt-8 pb-20"
             >
-              <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-cyan-bright/30 backdrop-blur-md bg-dark-surface/40 text-cyan-bright text-[10px] font-bold uppercase tracking-[0.25em] mb-8 shadow-[0_0_15px_rgba(56,189,248,0.15)]">
-                RISDA_BEAUFORT_PORTAL_V2
+              {/* Virtual HUD Header */}
+              <div className="w-full hidden md:flex justify-between items-center mb-12 opacity-40">
+                <div className="flex items-center gap-4">
+                  <div className="w-px h-8 bg-cyan-bright/50"></div>
+                  <div className="flex flex-col items-start font-mono text-[8px] tracking-[0.3em]">
+                    <span className="text-cyan-bright tracking-widest">SYSTEM_STATUS: ONLINE</span>
+                    <span className="text-white/50 tracking-widest">SECURITY: ENCRYPTED</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-12 font-mono text-[8px] tracking-[0.3em]">
+                   <div className="flex flex-col items-end">
+                      <span className="text-white/30 truncate">LAST_UPLINK: {new Date().toLocaleTimeString()}</span>
+                      <span className="text-cyan-bright uppercase tracking-widest">BEAUFORT_SECURE_NODE</span>
+                   </div>
+                   <div className="w-px h-8 bg-cyan-bright/50"></div>
+                </div>
               </div>
-              <h1 className="text-6xl md:text-8xl font-light text-white tracking-tighter leading-tight mb-8">
-                e-Portal <span className="font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-cyan-bright to-cyan-muted">RISDA Beaufort.</span>
+
+              <div className="relative mb-8">
+                <div className="absolute inset-0 bg-cyan-bright/10 blur-[80px] rounded-full scale-150 opacity-20"></div>
+                <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-cyan-bright/30 backdrop-blur-md bg-dark-surface/40 text-cyan-bright text-[10px] font-bold uppercase tracking-[0.25em] mb-8 shadow-[0_0_15px_rgba(56,189,248,0.15)]">
+                  <span className="w-2 h-2 bg-cyan-bright rounded-full animate-pulse"></span>
+                  RISDA_BEAUFORT_PORTAL_V2
+                </div>
+              </div>
+
+              <h1 className="text-6xl md:text-8xl font-light text-white tracking-tighter leading-[1.1] mb-8">
+                Pusat Kawalan <span className="font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-cyan-bright to-cyan-muted">Logistik.</span>
               </h1>
-              <p className="text-lg md:text-xl text-text-light/80 mb-20 max-w-2xl leading-relaxed font-light">
-                Portal Perkhidmatan Bersepadu Pejabat RISDA Daerah Beaufort merangkumi Pengurusan Kenderaan, Tempahan Bilik Mesyuarat, Tempahan Makan/Minum, Permohonan Alat Tulis dan Aduan Kerosakan.
+              <p className="text-lg md:text-xl text-text-light/50 max-w-2xl font-light leading-relaxed mb-16 tracking-wide italic">
+                Platform Automasi Pejabat RISDA Daerah Beaufort. Integrasi perkhidmatan kenderaan, ruang mesyuarat, inventori, dan pemerkasaan logistik harian.
               </p>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-6 xl:gap-8 w-full max-w-full relative z-10">
                 <ModuleCard 
                   title="Kenderaan"
-                  desc="Tempahan kenderaan rasmi."
+                  desc="Tempahan fleet & logistik."
                   icon={<Car className="w-8 h-8" />}
                   onClick={() => {
                     setCurrentModule("vehicle");
@@ -337,7 +864,7 @@ export default function App() {
                 />
                 <ModuleCard 
                   title="Mesyuarat"
-                  desc="Bilik & fasiliti."
+                  desc="Akses & tempahan ruang."
                   icon={<MapPin className="w-8 h-8" />}
                   onClick={() => {
                     setCurrentModule("meeting");
@@ -347,7 +874,7 @@ export default function App() {
                 />
                 <ModuleCard 
                   title="Katering"
-                  desc="Makanan & minuman."
+                  desc="Pengurusan hidangan rasmi."
                   icon={<FileText className="w-8 h-8" />}
                   onClick={() => {
                     setCurrentModule("catering");
@@ -357,7 +884,7 @@ export default function App() {
                 />
                 <ModuleCard 
                   title="Aduan"
-                  desc="Kerosakan ICT/Bangunan."
+                  desc="Pelaporan & penyelenggaraan."
                   icon={<Wrench className="w-8 h-8" />}
                   onClick={() => {
                     setCurrentModule("complaint");
@@ -367,7 +894,7 @@ export default function App() {
                 />
                 <ModuleCard 
                   title="Alat Tulis"
-                  desc="Permohonan stok pejabat."
+                  desc="Permohonan stok operasi."
                   icon={<Pencil className="w-8 h-8" />}
                   onClick={() => {
                     setCurrentModule("stationery");
@@ -376,57 +903,6 @@ export default function App() {
                   active={currentModule === "stationery"}
                 />
               </div>
-
-              {user && (
-                <div id="request-history" className="mt-32 w-full max-w-5xl text-left">
-                  <div className="flex items-center gap-4 mb-10 border-b border-dark-surface pb-6">
-                    <h2 className="text-2xl font-light text-white tracking-widest uppercase italic">Recent_History <span className="font-bold opacity-30 text-cyan-bright">.LOG</span></h2>
-                    <div className="h-[1px] flex-grow bg-dark-surface"></div>
-                  </div>
-                  
-                  <div className="grid grid-cols-1 gap-4">
-                    {requests
-                      .filter(r => r.userId === user.uid)
-                      .slice(0, 10)
-                      .map((req, idx) => (
-                      <motion.div 
-                        key={req.id}
-                        initial={{ opacity: 0, x: -10 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        transition={{ delay: idx * 0.1 }}
-                        className="p-6 bg-dark-surface/10 border border-dark-surface hover:bg-dark-surface/20 hover:border-cyan-bright/30 transition-all rounded-lg flex flex-col md:flex-row justify-between items-center gap-6"
-                      >
-                        <div className="flex-grow">
-                          <div className="flex items-center gap-3 mb-2">
-                             <div className="px-2 py-0.5 bg-dark-bg border border-dark-surface rounded text-[8px] font-mono text-cyan-muted uppercase">{req.moduleType || "V"}_{req.id.substring(0,8)}</div>
-                             <span className="text-[10px] font-mono text-text-light/30">{req.createdAt ? new Date(req.createdAt.toDate()).toLocaleString() : 'Saving...'}</span>
-                          </div>
-                          <h4 className="text-white text-sm font-bold uppercase tracking-widest mb-1">{req.data.butiran_perjalanan.tujuan || "N/A"}</h4>
-                          <div className="flex items-center gap-4">
-                            <div className="flex items-center gap-2 text-[10px] text-text-light/50 font-medium">
-                              {req.moduleType === 'vehicle' && <Car className="w-3 h-3" />}
-                              {req.moduleType === 'meeting' && <MapPin className="w-3 h-3" />}
-                              {req.moduleType === 'catering' && <FileText className="w-3 h-3" />}
-                              {req.moduleType === 'complaint' && <Wrench className="w-3 h-3" />}
-                              {req.moduleType === 'stationery' && <Pencil className="w-3 h-3" />}
-                              <span className="text-cyan-bright uppercase">{req.moduleType || 'vehicle'}</span>
-                            </div>
-                          </div>
-                        </div>
-                        <div className="flex gap-3">
-                           <StatusBadge label="Kelulusan" status={req.data.status_kelulusan.bahagian_pentadbiran} />
-                        </div>
-                      </motion.div>
-                    ))}
-                    {requests.filter(r => r.userId === user.uid).length === 0 && (
-                      <div className="p-12 text-center bg-dark-surface/5 border border-dashed border-dark-surface rounded-xl flex flex-col items-center justify-center opacity-40">
-                         <Info className="w-8 h-8 mb-4 text-cyan-muted" />
-                         <p className="text-[10px] font-bold uppercase tracking-[0.3em]">No_History_Records_Found</p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
             </motion.div>
           )}
 
@@ -474,11 +950,7 @@ export default function App() {
                 </div>
 
                 <div 
-                  onClick={() => {
-                    const history = document.getElementById('request-history');
-                    if (history) history.scrollIntoView({ behavior: 'smooth' });
-                    else setState("idle");
-                  }}
+                  onClick={() => setState("check_status")}
                   className="group relative overflow-hidden p-10 rounded-2xl transition-all duration-500 text-left cursor-pointer transform hover:-translate-y-2 border border-white/5 bg-dark-bg/40 backdrop-blur-md hover:border-cyan-bright/50 hover:bg-dark-surface/60 hover:shadow-2xl"
                 >
                   <div className="absolute top-0 right-0 -mt-4 -mr-4 w-32 h-32 bg-cyan-bright/5 rounded-full blur-3xl group-hover:bg-cyan-bright/10 transition-all duration-700"></div>
@@ -496,6 +968,100 @@ export default function App() {
               >
                 <ArrowLeft className="w-3 h-3" /> Kembali ke Utama
               </button>
+            </motion.div>
+          )}
+
+          {state === "check_status" && (
+            <motion.div
+              key="check_status"
+              initial={{ opacity: 0, scale: 0.98 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.98 }}
+              className="space-y-8 max-w-4xl mx-auto pt-8"
+            >
+              <div className="flex items-center gap-6 border-b border-dark-surface pb-8">
+                <button 
+                  onClick={() => setState("hub")}
+                  className="p-3 bg-dark-surface hover:bg-cyan-bright/10 text-cyan-muted hover:text-cyan-bright rounded-full transition-all"
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <div>
+                  <h2 className="text-3xl font-light text-white tracking-tight">Semakan <span className="font-bold">Status.</span></h2>
+                  <p className="text-text-light/50 text-xs mt-1">Sila masukkan emel yang digunakan semasa membuat permohonan.</p>
+                </div>
+              </div>
+
+              <div className="bg-dark-surface/20 border border-dark-surface p-8 rounded-xl backdrop-blur-sm">
+                <div className="flex gap-4 max-w-xl mx-auto">
+                  <input 
+                    type="email" 
+                    value={checkEmail}
+                    onChange={(e) => setCheckEmail(e.target.value)}
+                    placeholder="Contoh: namaanda@gmail.com"
+                    className="form-input flex-grow text-sm py-4!"
+                  />
+                  <button className="px-8 py-4 bg-cyan-bright text-dark-bg font-bold tracking-widest text-[10px] uppercase rounded-sm hover:bg-cyan-bright/90 transition-all">
+                    Cari
+                  </button>
+                </div>
+              </div>
+
+              {checkEmail.length > 5 && (
+                <div className="mt-12">
+                  <h3 className="text-[10px] uppercase font-bold text-cyan-muted tracking-[0.2em] mb-6">Rekod Ditemui ({requests.filter(r => r.userEmail && r.userEmail.toLowerCase() === checkEmail.toLowerCase()).length})</h3>
+                  <div className="grid grid-cols-1 gap-4">
+                    {requests
+                      .filter(r => r.userEmail && r.userEmail.toLowerCase() === checkEmail.toLowerCase())
+                      .map((req, idx) => (
+                      <motion.div 
+                        key={req.id}
+                        initial={{ opacity: 0, x: -10 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: idx * 0.1 }}
+                        className="p-6 bg-dark-bg border border-dark-surface hover:border-cyan-bright/30 transition-all rounded-lg flex flex-col md:flex-row justify-between items-center gap-6 relative overflow-hidden group cursor-pointer"
+                        onClick={() => {
+                          setResultSource("check");
+                          // Normalize result data to match ExtractionResult interface expected by the result view
+                          setResult({ ...req.data, id: req.id, moduleType: req.moduleType });
+                          if (req.moduleType) setCurrentModule(req.moduleType as any);
+                          setState("result");
+                        }}
+                      >
+                        <div className="absolute top-0 left-0 w-1 h-full bg-cyan-bright opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                        <div className="flex-grow max-w-full overflow-hidden">
+                          <div className="flex flex-wrap items-center gap-3 mb-3">
+                             <div className="px-2 py-0.5 bg-dark-surface border border-white/5 rounded text-[8px] font-mono text-cyan-muted uppercase">{req.moduleType || "V"}_{req.id.substring(0,8)}</div>
+                             <span className="text-[10px] font-mono text-text-light/30 border-l border-dark-surface pl-3">{req.createdAt ? new Date(req.createdAt.toDate()).toLocaleString() : 'Saving...'}</span>
+                          </div>
+                          <h4 className="text-white text-base font-bold uppercase tracking-widest mb-1 truncate">{req.data.butiran_perjalanan.tujuan || "N/A"}</h4>
+                          <div className="flex items-center gap-4 mt-3">
+                            <div className="flex items-center gap-2 text-[10px] text-text-light/50 font-medium bg-dark-surface/50 px-3 py-1 rounded-full">
+                              {req.moduleType === 'vehicle' && <Car className="w-3 h-3 text-cyan-muted" />}
+                              {req.moduleType === 'meeting' && <MapPin className="w-3 h-3 text-cyan-muted" />}
+                              {req.moduleType === 'catering' && <FileText className="w-3 h-3 text-cyan-muted" />}
+                              {req.moduleType === 'complaint' && <Wrench className="w-3 h-3 text-cyan-muted" />}
+                              {req.moduleType === 'stationery' && <Pencil className="w-3 h-3 text-cyan-muted" />}
+                              <span className="uppercase">{req.moduleType || 'vehicle'}</span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex flex-col gap-2 min-w-[250px]">
+                           <StatusBadge label="Kelulusan Ketua" status={req.data.status_kelulusan.ketua_unit} />
+                           {req.moduleType === 'vehicle' && <StatusBadge label="Tindakan P.Kenderaan" status={req.data.status_kelulusan.pegawai_kenderaan} />}
+                           <StatusBadge label="Keputusan Akhir" status={req.data.status_kelulusan.bahagian_pentadbiran} />
+                        </div>
+                      </motion.div>
+                    ))}
+                    {requests.filter(r => r.userEmail && r.userEmail.toLowerCase() === checkEmail.toLowerCase()).length === 0 && (
+                      <div className="p-12 text-center bg-dark-surface/5 border border-dashed border-dark-surface rounded-xl flex flex-col items-center justify-center opacity-40">
+                         <Info className="w-8 h-8 mb-4 text-cyan-muted" />
+                         <p className="text-[10px] font-bold uppercase tracking-[0.3em]">Tiada Rekod Dijumpai Untuk Emel Ini</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </motion.div>
           )}
 
@@ -1105,74 +1671,102 @@ export default function App() {
                   transition={{ duration: 1.5, repeat: Infinity, ease: "linear" }}
                 ></motion.div>
                 <div className="absolute inset-0 flex items-center justify-center">
-                  <span className="font-mono text-cyan-bright text-xs tracking-widest animate-pulse">ANALYZING...</span>
+                  <span className="font-mono text-cyan-bright text-xs tracking-widest animate-pulse">MENYIMPAN...</span>
                 </div>
               </div>
-              <h2 className="text-3xl font-bold text-white mb-3 tracking-tight">Kompilasi Data Mula...</h2>
+              <h2 className="text-3xl font-bold text-white mb-3 tracking-tight">Menghantar Permohonan...</h2>
               <p className="text-text-light/50 max-w-sm font-mono text-[10px] uppercase tracking-widest">
-                System status: Running check_health... [OK]
+                Data sedang direkodkan ke dalam sistem.
               </p>
             </motion.div>
           )}
 
           {state === "result" && result && (
             <motion.div
+              id="result-to-print"
               key="result"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               className="space-y-10"
             >
-              <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 border-b border-dark-surface pb-10">
+              <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 border-b border-dark-surface pb-10 hide-on-print">
                 <div>
                   <button 
                     onClick={reset}
                     className="group mb-6 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-cyan-muted hover:text-cyan-bright transition-colors"
                   >
-                    <ArrowLeft className="w-3 h-3 group-hover:-translate-x-1 transition-transform" /> Back to Blueprint
+                    <ArrowLeft className="w-3 h-3 group-hover:-translate-x-1 transition-transform" /> Kembali Ke Utama
                   </button>
-                  <h2 className="text-4xl font-light text-white tracking-tight">Extraction <span className="font-bold">Schema.</span></h2>
-                  <p className="text-text-light/40 font-mono text-[10px] uppercase mt-1 tracking-widest">Status: Output successful [14:02 UTC+8]</p>
-                </div>
-                <div className="flex gap-4">
-                  <button 
-                    onClick={() => copyToClipboard(JSON.stringify(result, null, 2))}
-                    className="flex items-center gap-2 px-6 py-3 bg-dark-surface text-cyan-bright border border-cyan-muted/30 rounded-sm text-[11px] font-bold uppercase tracking-widest hover:bg-dark-surface/70 transition-all shadow-lg"
-                  >
-                    <Copy className="w-4 h-4" /> Copy Node
-                  </button>
-                  <button 
-                    className="flex items-center gap-2 px-6 py-3 bg-cyan-bright text-dark-bg rounded-sm text-[11px] font-black uppercase tracking-widest hover:bg-white transition-all shadow-lg"
-                    onClick={async () => {
-                      if (!user) {
-                        alert("Sila log masuk untuk menyimpan permohonan ke database.");
-                        await loginWithGoogle();
-                        return;
-                      }
-                      try {
-                        await saveGenericRequest(user.uid, user.email || "", result, currentModule);
-                        alert("Permohonan berjaya disimpan ke pangkalan data!");
-                      } catch (err) {
-                        alert("Gagal menyimpan permohonan.");
-                      }
-                    }}
-                  >
-                    <Download className="w-4 h-4" /> Save to Database
-                  </button>
+                  <h2 className="text-4xl font-light text-white tracking-tight">
+                    {resultSource === "submission" ? (
+                      <>Permohonan <span className="font-bold">Berjaya.</span></>
+                    ) : (
+                      <>Status <span className="font-bold">Permohonan.</span></>
+                    )}
+                  </h2>
+                  <p className="text-text-light/40 font-mono text-[10px] uppercase mt-1 tracking-widest">
+                    {resultSource === "submission" ? "Status: Data berjaya direkodkan" : `ID: ${result.id}`}
+                  </p>
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-10">
-                {/* Result Visual Cards */}
-                <div className="lg:col-span-7 space-y-8">
-                  <DataCard title="Maklumat Identiti Pemohon" icon={<User className="w-5 h-5 text-cyan-bright" />}>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6">
-                      <LabelValue label="Identity Name" value={result.maklumat_pemohon.nama} />
-                      <LabelValue label="Email Access" value={result.maklumat_pemohon.email} />
-                      <LabelValue label="Designation" value={result.maklumat_pemohon.jawatan} />
-                      <LabelValue label="Operation Base" value={result.maklumat_pemohon.tempat_bertugas} colSpan={2} />
-                      <LabelValue label="Contact Office" value={result.maklumat_pemohon.no_tel_pejabat} />
-                      <LabelValue label="Contact Mobile" value={result.maklumat_pemohon.no_tel_bimbit} />
+               <div className="grid grid-cols-1 gap-10 max-w-4xl mx-auto">
+                {resultSource === "check" && (
+                  <DataCard title="RINGKASAN STATUS" icon={<ShieldCheck className="w-5 h-5 text-cyan-bright" />}>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-8 py-2">
+                      <div className="space-y-6">
+                        <LabelValue label="Nama Pemohon" value={result.maklumat_pemohon.nama} />
+                        <LabelValue label="Tarikh & Masa" value={`${result.butiran_perjalanan.tarikh_perlukan} | ${result.butiran_perjalanan.waktu_bertolak}`} />
+                        <LabelValue label="Tujuan Perjalanan" value={result.butiran_perjalanan.tujuan} vertical />
+                        <LabelValue label="Tempat Menunggu" value={result.butiran_perjalanan.tempat_menunggu} />
+                      </div>
+                      <div className="space-y-6 bg-dark-bg/30 p-6 border border-dark-surface rounded-sm">
+                        <div>
+                          <span className="text-[10px] uppercase font-bold text-cyan-bright tracking-widest block mb-3">Keputusan Akhir</span>
+                          {(() => {
+                             const isRejected = result.status_kelulusan.pegawai_kenderaan?.includes('TIDAK') || 
+                                               result.status_kelulusan.ketua_unit?.includes('TIDAK') || 
+                                               result.status_kelulusan.bahagian_pentadbiran?.includes('TIDAK');
+                             const isApproved = result.status_kelulusan.bahagian_pentadbiran?.includes('LULUS') || 
+                                               (currentModule === "vehicle" && result.status_kelulusan.ketua_unit === "DISOKONG");
+                             
+                             if (isRejected) return <div className="text-2xl font-black text-red-500 tracking-tighter">DITOLAK</div>;
+                             if (isApproved) return <div className="text-2xl font-black text-green-500 tracking-tighter">LULUS</div>;
+                             return <div className="text-2xl font-black text-yellow-500 tracking-tighter">DALAM PROSES</div>;
+                          })()}
+                        </div>
+  
+                        {(!currentModule || currentModule === "vehicle") && (
+                          <div>
+                            <span className="text-[10px] uppercase font-bold text-cyan-bright tracking-widest block mb-3">Kenderaan & Pemandu</span>
+                            <div className="text-lg font-bold text-white tracking-tight">
+                              {(() => {
+                                const dEmail = result.status_kelulusan.pemandu_email;
+                                const vId = result.jenis_kenderaan_dipohon.kenderaan_id;
+                                if (!dEmail && !vId) return <span className="text-text-light/30 italic">Belum Ditetapkan</span>;
+                                
+                                const fleetInfo = FLEET.find(f => f.driver === dEmail || f.id === vId);
+                                const driverName = fleetInfo ? fleetInfo.name : (dEmail || 'Pemandu');
+                                return `${vId || 'N/A'} — ${driverName}`;
+                              })()}
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     </div>
+                  </DataCard>
+                )}
+  
+                <div className={`space-y-8 ${resultSource === "check" ? "opacity-60" : ""}`}>
+                  <DataCard title="Maklumat Identiti Pemohon" icon={<User className="w-5 h-5 text-cyan-bright" />}>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6">
+                    <LabelValue label="Identity Name" value={result.maklumat_pemohon.nama} />
+                    <LabelValue label="Email Access" value={result.maklumat_pemohon.email} />
+                    <LabelValue label="Designation" value={result.maklumat_pemohon.jawatan} />
+                    <LabelValue label="Operation Base" value={result.maklumat_pemohon.tempat_bertugas} colSpan={2} />
+                    <LabelValue label="Contact Office" value={result.maklumat_pemohon.no_tel_pejabat} />
+                    <LabelValue label="Contact Mobile" value={result.maklumat_pemohon.no_tel_bimbit} />
+                  </div>
                   </DataCard>
 
                   <DataCard title={currentModule === "vehicle" ? "Logistik Perjalanan" : currentModule === "meeting" ? "Logistik Mesyuarat" : currentModule === "catering" ? "Logistik Tempahan Makanan" : currentModule === "stationery" ? "Logistik Permohonan Alat Tulis" : "Logistik Aduan"} icon={<MapPin className="w-5 h-5 text-cyan-bright" />}>
@@ -1222,38 +1816,23 @@ export default function App() {
                       </DataCard>
                     )}
                     <DataCard title="Internal Approval Trace" icon={<CheckCircle2 className="w-5 h-5 text-cyan-bright" />}>
-                      <div className="space-y-3">
+                      <div className="space-y-3 relative hide-on-print">
+                        <button 
+                          onClick={() => handlePrintPdf(result, currentModule, 'DALAM_PROSES', new Date().toLocaleDateString('ms-MY'))}
+                          className="absolute -top-12 right-0 px-3 py-1.5 bg-dark-surface/50 border border-cyan-bright/30 text-cyan-bright text-[10px] font-bold uppercase tracking-widest hover:bg-cyan-bright hover:text-dark-bg transition-all rounded-sm flex items-center gap-2"
+                        >
+                          <Printer className="w-3 h-3" /> Cetak PDF
+                        </button>
                         <StatusBadge label="Pegawai Kenderaan (Semakan)" status={result.status_kelulusan.pegawai_kenderaan} />
                         <StatusBadge label="Ketua Unit Pentadbiran (Sokongan)" status={result.status_kelulusan.ketua_unit} />
-                        <StatusBadge label="PRD (Kelulusan)" status={result.status_kelulusan.bahagian_pentadbiran} />
-                        <StatusBadge label="Jawapan Pemandu" status={result.status_kelulusan.pemandu} />
+                        {currentModule !== "vehicle" && (
+                          <StatusBadge label="Kelulusan (PRD)" status={result.status_kelulusan.bahagian_pentadbiran} />
+                        )}
+                        {(!currentModule || currentModule === "vehicle") && (
+                          <StatusBadge label="Jawapan Pemandu" status={result.status_kelulusan.pemandu} />
+                        )}
                       </div>
                     </DataCard>
-                  </div>
-                </div>
-
-                {/* JSON View */}
-                <div className="lg:col-span-5 h-full">
-                  <div className="bg-dark-surface/20 rounded-xl border border-cyan-muted/20 border-dashed h-[800px] overflow-hidden flex flex-col shadow-2xl">
-                    <div className="p-4 border-b border-dark-surface bg-dark-surface/50 flex justify-between items-center">
-                      <div className="flex items-center gap-2">
-                         <div className="w-2 h-2 rounded-full bg-cyan-bright shadow-[0_0_10px_rgba(102,252,241,0.5)]"></div>
-                         <span className="text-[10px] font-mono text-cyan-bright uppercase tracking-widest">SYSTEM_FLOW_DIAGRAM.JSON</span>
-                      </div>
-                      <div className="flex gap-1.5">
-                        <div className="w-2.5 h-2.5 rounded-full bg-dark-bg border border-dark-surface"></div>
-                        <div className="w-2.5 h-2.5 rounded-full bg-dark-bg border border-dark-surface"></div>
-                        <div className="w-2.5 h-2.5 rounded-full bg-dark-bg border border-dark-surface"></div>
-                      </div>
-                    </div>
-                    <div className="flex-grow overflow-auto p-6 custom-scrollbar bg-dark-bg/40 backdrop-blur-sm">
-                      <pre className="text-cyan-muted/80 font-mono text-[11px] leading-relaxed">
-                        <code>{JSON.stringify(result, null, 2)}</code>
-                      </pre>
-                    </div>
-                    <div className="p-4 text-[9px] font-mono text-cyan-bright/40 uppercase tracking-[0.3em] bg-dark-bg border-t border-dark-surface">
-                      &gt; Schema validation complete... [SECURE]
-                    </div>
                   </div>
                 </div>
               </div>
@@ -1265,9 +1844,9 @@ export default function App() {
               key="admin"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              className="space-y-8"
+              className="space-y-8 flex-col"
             >
-              <div className="flex items-center justify-between border-b border-dark-surface pb-8">
+              <div className="flex items-center justify-between border-b border-dark-surface pb-8 hide-on-print">
                 <div>
                   <button 
                     onClick={reset}
@@ -1282,9 +1861,11 @@ export default function App() {
                 </div>
                  <div className="flex gap-4">
                    {(adminRole === "Ketua Unit" || adminRole === "Ketua Unit Pentadbiran" || adminRole === "Admin") && (() => {
-                      const pendingCount = requests.filter(r => 
-                        r.data.status_kelulusan.ketua_unit === "MENUNGGU SOKONGAN"
-                      ).length;
+                      const pendingCount = requests.filter(r => {
+                        if (r.data.status_kelulusan.ketua_unit !== "MENUNGGU SOKONGAN") return false;
+                        if (r.moduleType === "vehicle" && r.data.status_kelulusan.pemandu !== "DISAHKAN") return false;
+                        return true;
+                      }).length;
                       if (pendingCount > 0) {
                         return (
                           <div className="px-4 py-2 bg-cyan-bright/10 border border-cyan-bright/30 rounded-sm flex items-center gap-3 animate-pulse">
@@ -1297,7 +1878,8 @@ export default function App() {
                    })()}
                    {(adminRole === "Pegawai Kenderaan" || adminRole === "Admin") && (() => {
                       const pendingCount = requests.filter(r => {
-                        if (r.data.status_kelulusan.ketua_unit !== "DISOKONG" || r.data.status_kelulusan.pegawai_kenderaan !== "MENUNGGU PENGESAHAN") return false;
+                        if (r.data.status_kelulusan.pegawai_kenderaan !== "MENUNGGU PENGESAHAN") return false;
+                        if (r.moduleType !== "vehicle" && r.data.status_kelulusan.ketua_unit !== "DISOKONG") return false;
                         
                         const isIzarul = user?.email?.toLowerCase() === 'izarul@risda.gov.my';
                         const isAdzaimin = user?.email?.toLowerCase() === 'adzaimin@risda.gov.my';
@@ -1328,6 +1910,7 @@ export default function App() {
                    })()}
                    {(adminRole === "PRD" || adminRole === "Admin") && (() => {
                       const pendingCount = requests.filter(r => 
+                        r.moduleType !== "vehicle" &&
                         r.data.status_kelulusan.pegawai_kenderaan === "SAH" && 
                         r.data.status_kelulusan.bahagian_pentadbiran === "MENUNGGU KELULUSAN"
                       ).length;
@@ -1341,6 +1924,32 @@ export default function App() {
                       }
                       return null;
                    })()}
+                   
+                   {!isDriver && (
+                     <>
+                       <button 
+                         onClick={() => setShowQRModal(true)}
+                         className="px-4 py-2 border border-cyan-bright/30 bg-dark-bg text-cyan-bright hover:bg-cyan-bright hover:text-dark-bg text-[10px] font-bold uppercase tracking-widest rounded-sm transition-all flex items-center gap-2"
+                       >
+                         <QrCode className="w-3 h-3" /> QR Code
+                       </button>
+                       <button 
+                         onClick={exportToCSV}
+                         className="px-4 py-2 border border-cyan-bright/30 bg-dark-bg text-cyan-bright hover:bg-cyan-bright hover:text-dark-bg text-[10px] font-bold uppercase tracking-widest rounded-sm transition-all flex items-center gap-2"
+                       >
+                         <Download className="w-3 h-3" /> Eksport CSV
+                       </button>
+                       {(!currentModule || currentModule === 'vehicle') && (
+                         <button 
+                           onClick={handlePrintDriverReport}
+                           className="px-4 py-2 border border-cyan-bright/30 bg-dark-bg text-cyan-bright hover:bg-cyan-bright hover:text-dark-bg text-[10px] font-bold uppercase tracking-widest rounded-sm transition-all flex items-center gap-2"
+                         >
+                           <Printer className="w-3 h-3" /> Laporan Pemandu
+                         </button>
+                       )}
+                     </>
+                   )}
+
                    <div className="px-4 py-2 bg-dark-bg border border-dark-surface rounded-sm flex items-center gap-3">
                       <div className="w-2 h-2 bg-cyan-bright rounded-full animate-pulse"></div>
                       <span className="text-[10px] font-bold uppercase tracking-widest text-text-light/60">System_Control_Active</span>
@@ -1348,11 +1957,48 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Module Filter Tabs */}
+              <div className="flex flex-wrap items-center gap-2 mb-6 hide-on-print">
+                <button 
+                  onClick={() => setCurrentModule("vehicle")}
+                  className={`px-4 py-2 text-[10px] font-bold uppercase tracking-widest rounded-sm border transition-all ${currentModule === 'vehicle' ? 'bg-cyan-bright text-dark-bg border-cyan-bright' : 'bg-dark-surface/30 border-dark-surface text-text-light/50 hover:bg-dark-surface/50'}`}
+                >
+                  Kenderaan
+                </button>
+                <button 
+                  onClick={() => setCurrentModule("meeting")}
+                  className={`px-4 py-2 text-[10px] font-bold uppercase tracking-widest rounded-sm border transition-all ${currentModule === 'meeting' ? 'bg-cyan-bright text-dark-bg border-cyan-bright' : 'bg-dark-surface/30 border-dark-surface text-text-light/50 hover:bg-dark-surface/50'}`}
+                >
+                  Mesyuarat
+                </button>
+                <button 
+                  onClick={() => setCurrentModule("catering")}
+                  className={`px-4 py-2 text-[10px] font-bold uppercase tracking-widest rounded-sm border transition-all ${currentModule === 'catering' ? 'bg-cyan-bright text-dark-bg border-cyan-bright' : 'bg-dark-surface/30 border-dark-surface text-text-light/50 hover:bg-dark-surface/50'}`}
+                >
+                  Makan/Minum
+                </button>
+                <button 
+                  onClick={() => setCurrentModule("complaint")}
+                  className={`px-4 py-2 text-[10px] font-bold uppercase tracking-widest rounded-sm border transition-all ${currentModule === 'complaint' ? 'bg-cyan-bright text-dark-bg border-cyan-bright' : 'bg-dark-surface/30 border-dark-surface text-text-light/50 hover:bg-dark-surface/50'}`}
+                >
+                  Aduan
+                </button>
+                <button 
+                  onClick={() => setCurrentModule("stationery")}
+                  className={`px-4 py-2 text-[10px] font-bold uppercase tracking-widest rounded-sm border transition-all ${currentModule === 'stationery' ? 'bg-cyan-bright text-dark-bg border-cyan-bright' : 'bg-dark-surface/30 border-dark-surface text-text-light/50 hover:bg-dark-surface/50'}`}
+                >
+                  Alat Tulis
+                </button>
+              </div>
+
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
                 {/* Request List */}
-                <div className="lg:col-span-4 space-y-4 max-h-[70vh] overflow-y-auto custom-scrollbar pr-2">
+                <div className="lg:col-span-4 space-y-4 max-h-[70vh] overflow-y-auto custom-scrollbar pr-2 hide-on-print">
                   {requests
                     .filter(req => {
+                       const reqType = req.moduleType || 'vehicle';
+                       if (reqType !== currentModule) return false;
+
                        if (isDriver && !adminRole) {
                          if (req.moduleType && req.moduleType !== 'vehicle') return false;
                          const vehicle = FLEET.find(v => v.id === req.data.jenis_kenderaan_dipohon.kenderaan_id);
@@ -1390,11 +2036,22 @@ export default function App() {
                                 }
                               }
                               
-                              if ((req.data.status_kelulusan.ketua_unit === "MENUNGGU SOKONGAN" && (adminRole === "Ketua Unit" || adminRole === "Ketua Unit Pentadbiran" || adminRole === "Admin")) ||
-                                  (req.data.status_kelulusan.ketua_unit === "DISOKONG" && req.data.status_kelulusan.pegawai_kenderaan === "MENUNGGU PENGESAHAN" && authForPegawai) ||
-                                  (req.data.status_kelulusan.pegawai_kenderaan === "SAH" && req.data.status_kelulusan.bahagian_pentadbiran === "MENUNGGU KELULUSAN" && (adminRole === "PRD" || adminRole === "Admin"))) {
+                              if (adminRole === "Admin" || (adminRole === "Pegawai Kenderaan" && authForPegawai)) {
+                                if (req.data.status_kelulusan.pegawai_kenderaan === "MENUNGGU PENGESAHAN") return "bg-yellow-500/5 border-yellow-500/30 hover:bg-yellow-500/10 animate-pulse";
+                              }
+                              
+                              if ((adminRole === "Ketua Unit" || adminRole === "Ketua Unit Pentadbiran" || adminRole === "Admin") && 
+                                  req.data.status_kelulusan.ketua_unit === "MENUNGGU SOKONGAN" &&
+                                  (req.moduleType !== "vehicle" || (req.moduleType === "vehicle" && req.data.status_kelulusan.pemandu === "DISAHKAN"))) {
                                 return "bg-yellow-500/5 border-yellow-500/30 hover:bg-yellow-500/10 animate-pulse";
                               }
+
+                              if ((adminRole === "PRD" || adminRole === "Admin") && 
+                                  req.data.status_kelulusan.bahagian_pentadbiran === "MENUNGGU KELULUSAN" &&
+                                  req.moduleType !== "vehicle") { // vehicle drops PRD
+                                return "bg-yellow-500/5 border-yellow-500/30 hover:bg-yellow-500/10 animate-pulse";
+                              }
+                              
                               return "bg-dark-surface/30 border-dark-surface hover:bg-dark-surface/50";
                           })()
                       }`}
@@ -1426,11 +2083,15 @@ export default function App() {
                                 }
                               }
                               
-                              if ((req.data.status_kelulusan.ketua_unit === "MENUNGGU SOKONGAN" && adminRole?.includes("Ketua Unit")) ||
-                                  (req.data.status_kelulusan.ketua_unit === "DISOKONG" && req.data.status_kelulusan.pegawai_kenderaan === "MENUNGGU PENGESAHAN" && authForPegawai) ||
-                                  (req.data.status_kelulusan.pegawai_kenderaan === "SAH" && req.data.status_kelulusan.bahagian_pentadbiran === "MENUNGGU KELULUSAN" && adminRole === "PRD")) {
-                                return <Bell className="w-2.5 h-2.5 text-yellow-500" />;
+                              if ((adminRole === "Admin" || (adminRole === "Pegawai Kenderaan" && authForPegawai)) && 
+                                  req.data.status_kelulusan.pegawai_kenderaan === "MENUNGGU PENGESAHAN") return <Bell className="w-2.5 h-2.5 text-yellow-500" />;
+                              
+                              if ((adminRole === "Ketua Unit" || adminRole === "Ketua Unit Pentadbiran" || adminRole === "Admin") && 
+                                  req.data.status_kelulusan.ketua_unit === "MENUNGGU SOKONGAN" &&
+                                  (req.moduleType !== "vehicle" || (req.moduleType === "vehicle" && req.data.status_kelulusan.pemandu === "DISAHKAN"))) {
+                                  return <Bell className="w-2.5 h-2.5 text-yellow-500" />;
                               }
+                              
                               return null;
                            })()}
                         </div>
@@ -1460,86 +2121,24 @@ export default function App() {
                 {/* Detail View */}
                 <div className="lg:col-span-8">
                   {selectedRequest ? (
-                    <div className="bg-dark-surface/20 border border-dark-surface rounded-xl p-8 space-y-10">
+                    <div id="admin-to-print" className="bg-dark-surface/20 border border-dark-surface rounded-xl p-8 space-y-10">
                       <div className="flex justify-between items-start">
                         <div>
                           <h2 className="text-2xl font-bold text-white uppercase tracking-tight">{selectedRequest.data.maklumat_pemohon.nama}</h2>
                           <p className="text-cyan-bright font-mono text-[10px] uppercase tracking-[0.3em] font-bold mt-1">{selectedRequest.userEmail}</p>
                         </div>
-                        <div className="flex gap-2">
-                           {isDriver && selectedRequest.data.status_kelulusan.pemandu === "MENUNGGU JAWAPAN" && (
-                             <>
-                               <button 
-                                onClick={async () => {
-                                  const updatedStatus = { ...selectedRequest.data.status_kelulusan, pemandu: "DISAHKAN" };
-                                  await updateRequestStatus(selectedRequest.id, updatedStatus);
-                                  setSelectedRequest(null);
-                                }}
-                                className="px-6 py-2 bg-green-500/20 border border-green-500 text-green-500 text-[10px] font-black uppercase tracking-widest hover:bg-green-500 hover:text-white transition-all rounded-sm"
-                               > Accept Movement </button>
-                               <button 
-                                onClick={async () => {
-                                  const updatedStatus = { ...selectedRequest.data.status_kelulusan, pemandu: "DITOLAK" };
-                                  await updateRequestStatus(selectedRequest.id, updatedStatus);
-                                  setSelectedRequest(null);
-                                }}
-                                className="px-6 py-2 bg-red-500/20 border border-red-500 text-red-500 text-[10px] font-black uppercase tracking-widest hover:bg-red-500 hover:text-white transition-all rounded-sm"
-                               > Deny Entry </button>
-                             </>
-                           )}
-                           {adminRole && (
-                             <div className="grid grid-cols-1 gap-3 w-full">
-                               {/* Stage 1: Ketua Unit Pentadbiran */}
-                               {(adminRole === "Admin" || adminRole === "Ketua Unit" || adminRole === "Ketua Unit Pentadbiran") && (
-                                  <div className="p-4 bg-dark-bg/50 border border-dark-surface rounded-sm flex items-center justify-between">
-                                     <div className="flex flex-col">
-                                       <span className="text-[10px] font-bold text-text-light/40 uppercase tracking-widest">Sokongan</span>
-                                       <span className="text-xs font-bold text-white uppercase tracking-tight">Ketua Unit Pentadbiran</span>
-                                     </div>
-                                     <div className="flex gap-2">
-                                       <button 
-                                         onClick={async () => {
-                                           const updatedStatus = { ...selectedRequest.data.status_kelulusan, ketua_unit: "DISOKONG" };
-                                           await updateRequestStatus(selectedRequest.id, updatedStatus);
-                                         }}
-                                         className="px-3 py-1.5 bg-green-500/10 border border-green-500/30 text-green-500 text-[10px] font-bold uppercase tracking-widest hover:bg-green-500 hover:text-white transition-all rounded-sm"
-                                       > Sokong </button>
-                                       <button 
-                                         onClick={async () => {
-                                           const updatedStatus = { ...selectedRequest.data.status_kelulusan, ketua_unit: "TIDAK DISOKONG" };
-                                           await updateRequestStatus(selectedRequest.id, updatedStatus);
-                                         }}
-                                         className="px-3 py-1.5 bg-red-500/10 border border-red-500/30 text-red-500 text-[10px] font-bold uppercase tracking-widest hover:bg-red-500 hover:text-white transition-all rounded-sm"
-                                       > Tolak </button>
-                                     </div>
-                                  </div>
-                               )}
+                        <div className="flex gap-2 hide-on-print">
+                           <button 
+                             onClick={() => handlePrintPdf(selectedRequest.data, selectedRequest.moduleType, selectedRequest.id, selectedRequest.createdAt ? new Date(selectedRequest.createdAt.toDate()).toLocaleDateString('ms-MY') : new Date().toLocaleDateString('ms-MY'))}
+                             className="px-4 py-2 bg-dark-bg border border-cyan-bright/30 text-cyan-bright text-[10px] font-bold uppercase tracking-widest hover:bg-cyan-bright hover:text-dark-bg transition-all rounded-sm flex items-center gap-2"
+                           >
+                              <Printer className="w-3 h-3" /> Cetak PDF
+                           </button>
 
-                               {/* Stage 2: Pegawai Tempahan / Kenderaan / Aduan / Alat Tulis */}
-                               {(() => {
-                                  let showStage2 = false;
-                                  if (adminRole === "Admin") {
-                                    showStage2 = true;
-                                  } else if (adminRole === "Pegawai Kenderaan") {
-                                    const isComplaint = selectedRequest.moduleType === 'complaint';
-                                    const isStationery = selectedRequest.moduleType === 'stationery';
-                                    const cat = selectedRequest.data.jenis_kenderaan_dipohon.kenderaan_id;
-                                    const isIzarul = user?.email?.toLowerCase() === 'izarul@risda.gov.my';
-                                    const isAdzaimin = user?.email?.toLowerCase() === 'adzaimin@risda.gov.my';
-                                    
-                                    if (isComplaint) {
-                                      if (cat === 'BANGUNAN' && isIzarul) showStage2 = true;
-                                      if (cat === 'ICT' && isAdzaimin) showStage2 = true;
-                                    } else if (isStationery) {
-                                      const hasToner = selectedRequest.data.butiran_perjalanan.penumpang.some((p: string) => p.toLowerCase().includes('toner'));
-                                      if (hasToner && isAdzaimin) showStage2 = true;
-                                      if (!hasToner && isIzarul) showStage2 = true;
-                                    } else {
-                                      showStage2 = true;
-                                    }
-                                  }
-                                  return showStage2;
-                               })() && (
+                           {adminRole && (
+                             <div className="grid grid-cols-1 gap-3 w-full hide-on-print">
+                               {/* Stage 1: Pegawai Kenderaan (for vehicle, this is first) */}
+                               {(adminRole === "Admin" || adminRole === "Pegawai Kenderaan") && (
                                    <div className="p-4 bg-dark-bg/50 border border-dark-surface rounded-sm space-y-4">
                                       <div className="flex items-center justify-between">
                                         <div className="flex flex-col">
@@ -1572,7 +2171,7 @@ export default function App() {
                                       {(!selectedRequest.moduleType || selectedRequest.moduleType === "vehicle") && (
                                         <div className="pt-2 border-t border-dark-surface/50 space-y-4">
                                         <div>
-                                          <label className="text-[9px] font-bold text-cyan-bright uppercase tracking-widest block mb-2">Pilih Kenderaan Spesifik</label>
+                                          <label className="text-[9px] font-bold text-cyan-bright uppercase tracking-widest block mb-2">Pilih Kenderaan Spesifik / Pemilihan Pemandu</label>
                                           <select 
                                             className="w-full bg-dark-bg border border-dark-surface text-white text-[11px] p-2 rounded-sm focus:border-cyan-bright outline-none mb-3"
                                             value={selectedRequest.data.jenis_kenderaan_dipohon.kenderaan_id || ""}
@@ -1613,19 +2212,27 @@ export default function App() {
                                             />
                                           </div>
                                           <div>
-                                            <label className="text-[8px] font-bold text-text-light/40 uppercase tracking-widest block mb-1">Edit Pemandu (Email)</label>
-                                            <input 
+                                            <label className="text-[8px] font-bold text-text-light/40 uppercase tracking-widest block mb-1">Pilih Pemandu Bertugas</label>
+                                            <select 
                                               className="w-full bg-dark-bg/50 border border-dark-surface text-white text-[10px] p-2 rounded-sm focus:border-cyan-bright outline-none"
                                               value={selectedRequest.data.status_kelulusan.pemandu_email || ""}
                                               onChange={async (e) => {
                                                 const requestRef = doc(db, 'requests', selectedRequest.id);
                                                 await updateDoc(requestRef, {
                                                   'data.status_kelulusan.pemandu_email': e.target.value,
+                                                  'data.status_kelulusan.pemandu': 'DITETAPKAN',
                                                   updatedAt: serverTimestamp()
                                                 });
                                               }}
-                                              placeholder="pemandu@risda.gov.my"
-                                            />
+                                            >
+                                              <option value="">-- Pilih Pemandu --</option>
+                                              {Array.from(new Set(FLEET.map(v => v.driver))).map(driverEmail => {
+                                                const v = FLEET.find(f => f.driver === driverEmail);
+                                                return (
+                                                  <option key={driverEmail} value={driverEmail}>{driverEmail} ({v ? v.name : ''})</option>
+                                                )
+                                              })}
+                                            </select>
                                           </div>
                                         </div>
                                       </div>
@@ -1633,30 +2240,31 @@ export default function App() {
                                    </div>
                                 )}
 
-                               {/* Stage 3: PRD */}
-                               {(adminRole === "Admin" || adminRole === "PRD") && (
-                                 <div className="p-4 bg-dark-bg/50 border border-dark-surface rounded-sm flex items-center justify-between">
-                                    <div className="flex flex-col">
-                                      <span className="text-[10px] font-bold text-text-light/40 uppercase tracking-widest">Kelulusan</span>
-                                      <span className="text-xs font-bold text-white uppercase tracking-tight">PRD (Pentadbiran)</span>
-                                    </div>
-                                    <div className="flex gap-2">
-                                      <button 
-                                        onClick={async () => {
-                                          const updatedStatus = { ...selectedRequest.data.status_kelulusan, bahagian_pentadbiran: "DILULUSKAN" };
-                                          await updateRequestStatus(selectedRequest.id, updatedStatus);
-                                        }}
-                                        className="px-3 py-1.5 bg-green-500/10 border border-green-500/30 text-green-500 text-[10px] font-bold uppercase tracking-widest hover:bg-green-500 hover:text-white transition-all rounded-sm"
-                                      > Lulus </button>
-                                      <button 
-                                        onClick={async () => {
-                                          const updatedStatus = { ...selectedRequest.data.status_kelulusan, bahagian_pentadbiran: "TIDAK DILULUSKAN" };
-                                          await updateRequestStatus(selectedRequest.id, updatedStatus);
-                                        }}
-                                        className="px-3 py-1.5 bg-red-500/10 border border-red-500/30 text-red-500 text-[10px] font-bold uppercase tracking-widest hover:bg-red-500 hover:text-white transition-all rounded-sm"
-                                      > Tolak </button>
-                                    </div>
-                                 </div>
+                               {/* Stage 3: Ketua Unit Pentadbiran (Now happens after Pegawai and Driver) */}
+                               {(adminRole === "Admin" || adminRole === "Ketua Unit" || adminRole === "Ketua Unit Pentadbiran") && (
+                                  <div className="p-4 bg-dark-bg/50 border border-dark-surface rounded-sm flex items-center justify-between">
+                                     <div className="flex flex-col">
+                                       <span className="text-[10px] font-bold text-text-light/40 uppercase tracking-widest">Sokongan</span>
+                                       <span className="text-xs font-bold text-white uppercase tracking-tight">Ketua Unit Pentadbiran</span>
+                                     </div>
+                                     <div className="flex gap-2">
+                                       <button 
+                                         onClick={async () => {
+                                           const updatedStatus = { ...selectedRequest.data.status_kelulusan, ketua_unit: "DISOKONG" };
+                                           await updateRequestStatus(selectedRequest.id, updatedStatus);
+                                         }}
+                                         className="px-3 py-1.5 bg-green-500/10 border border-green-500/30 text-green-500 text-[10px] font-bold uppercase tracking-widest hover:bg-green-500 hover:text-white transition-all rounded-sm"
+                                       > Sokong </button>
+                                       <button 
+                                         onClick={async () => {
+                                           const updatedStatus = { ...selectedRequest.data.status_kelulusan, ketua_unit: "TIDAK DISOKONG" };
+                                           await updateRequestStatus(selectedRequest.id, updatedStatus);
+                                         }}
+                                         className="px-3 py-1.5 bg-red-500/10 border border-red-500/30 text-red-500 text-[10px] font-bold uppercase tracking-widest hover:bg-red-500 hover:text-white transition-all rounded-sm"
+                                       > Tolak </button>
+
+                                     </div>
+                                  </div>
                                )}
                              </div>
                            )}
@@ -1704,8 +2312,12 @@ export default function App() {
                               <div className="space-y-2">
                                 <StatusBadge label="Semakan (P. Kenderaan)" status={selectedRequest.data.status_kelulusan.pegawai_kenderaan} />
                                 <StatusBadge label="Sokongan (K. Unit Pentadbiran)" status={selectedRequest.data.status_kelulusan.ketua_unit} />
-                                <StatusBadge label="Kelulusan (PRD)" status={selectedRequest.data.status_kelulusan.bahagian_pentadbiran} />
-                                <StatusBadge label="Jawapan Pemandu" status={selectedRequest.data.status_kelulusan.pemandu} />
+                                {selectedRequest.moduleType !== "vehicle" && (
+                                  <StatusBadge label="Kelulusan (PRD) (Selain Kenderaan)" status={selectedRequest.data.status_kelulusan.bahagian_pentadbiran} />
+                                )}
+                                {(!selectedRequest.moduleType || selectedRequest.moduleType === "vehicle") && (
+                                  <StatusBadge label="Jawapan Pemandu" status={selectedRequest.data.status_kelulusan.pemandu} />
+                                )}
                               </div>
                            </div>
                         </div>
@@ -1742,6 +2354,65 @@ export default function App() {
               </button>
             </motion.div>
           )}
+
+          {/* QR Code Modal */}
+          <AnimatePresence>
+            {showQRModal && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="fixed inset-0 z-[100] flex items-center justify-center bg-dark-bg/90 backdrop-blur-sm p-4"
+              >
+                <motion.div 
+                  initial={{ scale: 0.95, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  exit={{ scale: 0.95, opacity: 0 }}
+                  className="bg-dark-surface border border-cyan-bright/30 p-8 max-w-sm w-full rounded-xl flex flex-col items-center text-center shadow-2xl relative"
+                >
+                  <button 
+                    onClick={() => setShowQRModal(false)}
+                    className="absolute top-4 right-4 text-text-light/40 hover:text-white transition-colors"
+                  >
+                    <XCircle className="w-6 h-6" />
+                  </button>
+                  <QrCode className="w-12 h-12 text-cyan-bright mb-4" />
+                  <h3 className="text-xl font-bold text-white mb-2">Akses Pantas e-Portal</h3>
+                  <p className="text-xs text-text-light/60 mb-6">Imbas kod QR ini menggunakan telefon pintar untuk log masuk dan paparan terus portal.</p>
+                  
+                  <div className="bg-white p-4 rounded-xl mb-6 shadow-[0_0_30px_rgba(102,252,241,0.2)] border border-cyan-bright">
+                    {/* Using qrserver API to render a clean, high-res QR code */}
+                    <img 
+                      src={`https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(systemUrl)}`} 
+                      alt="QR Code"
+                      className="w-48 h-48"
+                      crossOrigin="anonymous"
+                    />
+                  </div>
+
+                  <button 
+                    onClick={() => {
+                      const a = document.createElement('a');
+                      // Construct URL to force download
+                      a.href = `https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(systemUrl)}&download=1`;
+                      a.target = '_blank'; // Opens in new tab if direct download fails due to CORS
+                      a.download = 'RISDA_Beaufort_Portal_QR.png';
+                      document.body.appendChild(a);
+                      a.click();
+                      document.body.removeChild(a);
+                    }}
+                    className="w-full py-3 bg-cyan-bright text-dark-bg font-bold uppercase tracking-widest text-xs rounded-sm hover:bg-cyan-bright/90 transition-colors flex items-center justify-center gap-2"
+                  >
+                    <Download className="w-4 h-4" /> Muat Turun Kod QR
+                  </button>
+                  <div className="mt-4 p-3 bg-cyan-bright/5 rounded border border-cyan-bright/20 w-full">
+                     <p className="text-[10px] text-cyan-bright/80 font-mono text-left break-all">{systemUrl}</p>
+                  </div>
+                </motion.div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
         </AnimatePresence>
       </main>
 
@@ -1761,23 +2432,31 @@ function ModuleCard({ title, desc, icon, onClick, active }: { title: string, des
   return (
     <div 
       onClick={onClick}
-      className={`group relative overflow-hidden p-8 rounded-2xl transition-all duration-500 text-left cursor-pointer transform hover:-translate-y-2 ${
+      className={`portal-card min-h-[220px] group relative overflow-hidden p-8 transition-all duration-500 text-left cursor-pointer transform hover:-translate-y-2 flex flex-col justify-between ${
         active 
-          ? "border border-cyan-bright glass-panel shadow-[0_10px_40px_rgba(56,189,248,0.2)]" 
-          : "border border-white/5 bg-dark-bg/40 backdrop-blur-md hover:border-cyan-bright/50 hover:bg-dark-surface/60 hover:shadow-2xl"
+          ? "border-cyan-bright/50 shadow-[0_10px_40px_rgba(56,189,248,0.2)] bg-cyan-bright/5" 
+          : "hover:border-cyan-bright/30"
       }`}
     >
-      <div className="absolute top-0 right-0 -mt-4 -mr-4 w-32 h-32 bg-cyan-bright/5 rounded-full blur-3xl group-hover:bg-cyan-bright/20 transition-all duration-700"></div>
+      <div className="absolute top-0 right-0 -mt-10 -mr-10 w-40 h-40 bg-cyan-bright/10 rounded-full blur-3xl group-hover:bg-cyan-bright/30 transition-all duration-700"></div>
       
-      <div className={`relative z-10 w-16 h-16 rounded-xl border flex items-center justify-center mb-8 transition-all duration-500 ${
-        active ? "border-cyan-bright bg-cyan-bright/20 text-cyan-bright shadow-[0_0_20px_rgba(56,189,248,0.4)]" : "border-white/10 bg-dark-surface text-cyan-muted group-hover:text-cyan-bright group-hover:border-cyan-bright/50 group-hover:rotate-6"
+      <div className={`relative z-10 w-14 h-14 rounded-2xl flex items-center justify-center mb-6 transition-all duration-500 ${
+        active 
+          ? "border border-cyan-bright bg-cyan-bright/20 text-cyan-bright shadow-[0_0_20px_rgba(56,189,248,0.4)] rotate-6" 
+          : "border border-white/5 bg-dark-bg/80 text-cyan-muted group-hover:text-cyan-bright group-hover:border-cyan-bright/50 group-hover:bg-dark-surface"
       }`}>
-        <div className="transform scale-125">
+        <div className={`transform transition-transform duration-500 ${active ? "scale-110" : "group-hover:scale-110"}`}>
           {icon}
         </div>
       </div>
-      <h3 className="relative z-10 text-xl font-black text-white mb-3 tracking-wide">{title}</h3>
-      <p className="relative z-10 text-sm text-text-light/60 font-medium leading-relaxed">{desc}</p>
+      <div>
+        <h3 className="relative z-10 text-xl font-black text-white mb-2 tracking-widest">{title}</h3>
+        <p className="relative z-10 text-sm text-text-light/60 font-medium leading-relaxed italic">{desc}</p>
+      </div>
+      <div className="absolute bottom-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-2">
+        <span className="text-[8px] font-mono tracking-widest text-cyan-bright uppercase">Akses Modul</span>
+        <ChevronRight className="w-3 h-3 text-cyan-bright" />
+      </div>
     </div>
   );
 }

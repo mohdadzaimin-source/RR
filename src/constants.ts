@@ -13,7 +13,8 @@ export const ADMIN_MAPPING: Record<string, string> = {
   "sulizah@risda.gov.my": "Ketua Unit Pentadbiran",
   "ira@risda.gov.my": "PRD",
   "mohdadzaimin@gmail.com": "Admin", // Maintaining your access
-  "mohdadzaimin@googlemail.com": "Admin"
+  "mohdadzaimin@googlemail.com": "Admin",
+  "intergratedsrbft@gmail.com": "Admin"
 };
 
 export const MEETING_ROOMS = [
